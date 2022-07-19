@@ -1,5 +1,10 @@
-# Check that jump table detection does not fail on a false
-# reference to a jump table.
+# There are two conditions of a valid jump table
+# (a) MemType is POSSIBLE_JUMP_TABLE
+# (b) BranchType is POSSIBLE_JUMP_TABLE
+# Only then, in principle, a jump table will be created/accessed.
+
+# This test checks if a jump table is created based solely on MemType.
+# This test may need revision in future.
 
 # REQUIRES: system-linux
 

@@ -480,6 +480,10 @@ public:
                                        uint64_t Address,
                                        JumpTable::JumpTableType Type);
 
+  bool validJumpTableEntry(uint64_t EntryAddress, BinaryFunction *BF,
+                           BinaryFunction *&TargetBF,
+                           BinaryFunction *ValidExternalTargetBF);
+
   /// Analyze a possible jump table of type \p Type at a given \p Address.
   /// \p BF is a function referencing the jump table.
   /// Return true if the jump table was detected at \p Address, and false
