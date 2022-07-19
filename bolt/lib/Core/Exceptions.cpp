@@ -99,7 +99,7 @@ namespace bolt {
 //
 // Note: some functions have LSDA entries with 0 call site entries.
 void BinaryFunction::parseLSDA(ArrayRef<uint8_t> LSDASectionData,
-                               uint64_t LSDASectionAddress) {
+                               uint64_t LSDASectionAddress, bool CheckOnly) {
   assert(CurrentState == State::Disassembled && "unexpected function state");
 
   if (!getLSDAAddress())
@@ -128,7 +128,7 @@ void BinaryFunction::parseLSDA(ArrayRef<uint8_t> LSDASectionData,
     TTypeEncodingSize = BC.getDWARFEncodingSize(TTypeEncoding);
   }
 
-  if (opts::PrintExceptions) {
+  if (opts::PrintExceptions && !CheckOnly) {
     outs() << "[LSDA at 0x" << Twine::utohexstr(getLSDAAddress())
            << " for function " << *this << "]:\n";
     outs() << "LPStart Encoding = 0x" << Twine::utohexstr(LPStartEncoding)
@@ -158,7 +158,7 @@ void BinaryFunction::parseLSDA(ArrayRef<uint8_t> LSDASectionData,
   uint64_t CallSitePtr = CallSiteTableStart;
   uint64_t ActionTableStart = CallSiteTableEnd;
 
-  if (opts::PrintExceptions) {
+  if (opts::PrintExceptions && !CheckOnly) {
     outs() << "CallSite Encoding = " << (unsigned)CallSiteEncoding << '\n';
     outs() << "CallSite table length = " << CallSiteTableLength << '\n';
     outs() << '\n';
@@ -177,26 +177,77 @@ void BinaryFunction::parseLSDA(ArrayRef<uint8_t> LSDASectionData,
 
     uint64_t LPOffset = LPStart + LandingPad;
     uint64_t LPAddress = Address + LPOffset;
+    BinaryFunction *Fragment = BC.getBinaryFunctionContainingAddress(LPAddress);
 
+    // --------------------- Validate split landing pad ---------------------
     // Verify if landing pad code is located outside current function
-    // Support landing pad to builtin_unreachable
-    if (LPAddress < Address || LPAddress > Address + getSize()) {
-      BinaryFunction *Fragment =
-          BC.getBinaryFunctionContainingAddress(LPAddress);
+    // Otherwise, establish parent-fragment relation
+    // Skip case where landing pad targets builtin_unreachable
+    if ((LPAddress < Address || LPAddress > Address + getSize()) && CheckOnly) {
+      // Assume landing pad not target another fragment's builtin_unreachable
+      // If this assumption is violated, must run a global check first
       assert(Fragment != nullptr &&
              "BOLT-ERROR: cannot find landing pad fragment");
+
+      // Update IsFragment:
+      // In stripped mode, always trust LSDA, consider the function that
+      // contains LP as a fragment
+      // In non-stripped mode, use pattern matching (adjustFunctionBoundaries)
+      if (BC.IsStripped)
+        Fragment->IsFragment = true;
+
+      // Update parent-fragment relation, add Fragment as secondary entry of
+      // the current function, not an independent function
       BC.addInterproceduralReference(this, Fragment->getAddress());
       BC.processInterproceduralReferences();
-      auto isFragmentOf = [](BinaryFunction *Fragment,
-                             BinaryFunction *Parent) -> bool {
-        return (Fragment->isFragment() && Fragment->isParentFragment(Parent));
-      };
-      assert((isFragmentOf(this, Fragment) || isFragmentOf(Fragment, this)) &&
-             "BOLT-ERROR: cannot have landing pads in different "
-             "functions");
+
+      // In stripped mode, parent-fragment is always established --> skip check
+      // In non-stripped mode, parent-fragment depends on symbol name --> check
+      if (!BC.IsStripped) {
+        auto isFragmentOf = [](BinaryFunction *Fragment,
+                               BinaryFunction *Parent) -> bool {
+          return (Fragment->isFragment() && Fragment->isParentFragment(Parent));
+        };
+        assert((isFragmentOf(this, Fragment) || isFragmentOf(Fragment, this)) &&
+               "BOLT-ERROR: cannot have landing pads in different functions");
+      }
+      // Mark that this fragment reaches LP in another fragment of same function
       setHasIndirectTargetToSplitFragment(true);
       BC.addFragmentsToSkip(this);
-      return;
+    }
+
+    if (CheckOnly)
+      continue;
+    // ----------------------------------------------------------------------
+
+    // Create a handler entry if necessary.
+    MCSymbol *LPLabel = nullptr;
+
+    // Special case, consider builtin_unreachable as part of this function
+    if (LPAddress == Address + getSize())
+      Fragment = this;
+
+    // Assumption: landing pad cannot target current fragment entry
+    // Note: landing pad can target other fragment entry -> split landing pad
+    if (LPAddress != Address) {
+      uint64_t FragmentOffset = LPAddress - Fragment->getAddress();
+      if (!Fragment->getInstructionAtOffset(FragmentOffset)) {
+        if (opts::Verbosity >= 1)
+          errs() << "BOLT-WARNING: landing pad " << Twine::utohexstr(LPOffset)
+                 << " not pointing to an instruction in function " << *Fragment
+                 << " - ignoring.\n";
+      } else {
+        // Treat split landing pad as the fragment's secondary fragment
+        auto Label = Fragment->Labels.find(FragmentOffset);
+        LPLabel = (Label != Fragment->Labels.end())
+                      ? Label->second
+                      : ((Fragment != this)
+                             ? Fragment->addEntryPointAtOffset(FragmentOffset)
+                             : BC.Ctx->createNamedTempSymbol("LP"));
+        // Support recomputeLandingPad to identify split landing pad
+        BC.setSymbolToFunctionMap(LPLabel, Fragment);
+        Labels[LPOffset] = LPLabel;
+      }
     }
 
     if (opts::PrintExceptions) {
@@ -206,25 +257,8 @@ void BinaryFunction::parseLSDA(ArrayRef<uint8_t> LSDASectionData,
              << "; action entry: 0x" << Twine::utohexstr(ActionEntry) << "\n";
       outs() << "  current offset is " << (CallSitePtr - CallSiteTableStart)
              << '\n';
-    }
-
-    // Create a handler entry if necessary.
-    MCSymbol *LPSymbol = nullptr;
-    if (LPOffset) {
-      if (!getInstructionAtOffset(LPOffset)) {
-        if (opts::Verbosity >= 1)
-          errs() << "BOLT-WARNING: landing pad " << Twine::utohexstr(LPOffset)
-                 << " not pointing to an instruction in function " << *this
-                 << " - ignoring.\n";
-      } else {
-        auto Label = Labels.find(LPOffset);
-        if (Label != Labels.end()) {
-          LPSymbol = Label->second;
-        } else {
-          LPSymbol = BC.Ctx->createNamedTempSymbol("LP");
-          Labels[LPOffset] = LPSymbol;
-        }
-      }
+      if (LPLabel != nullptr)
+        outs() << "  landing pad label: " << LPLabel->getName() << "\n";
     }
 
     // Mark all call instructions in the range.
@@ -240,7 +274,7 @@ void BinaryFunction::parseLSDA(ArrayRef<uint8_t> LSDASectionData,
         // Add extra operands to a call instruction making it an invoke from
         // now on.
         BC.MIB->addEHInfo(Instruction,
-                          MCPlus::MCLandingPad(LPSymbol, ActionEntry));
+                          MCPlus::MCLandingPad(LPLabel, ActionEntry));
       }
       ++II;
     } while (II != IE && II->first < Start + Length);
@@ -506,6 +540,18 @@ CFIReaderWriter::CFIReaderWriter(const DWARFDebugFrame &EHFrame) {
   }
 }
 
+void CFIReaderWriter::extractLSDAAddress(BinaryFunction &Function) const {
+  uint64_t Address = Function.getAddress();
+  auto I = FDEs.find(Address);
+  // Ignore zero-length FDE ranges.
+  if (I == FDEs.end() || !I->second->getAddressRange())
+    return;
+
+  const FDE &CurFDE = *I->second;
+  Optional<uint64_t> LSDA = CurFDE.getLSDAAddress();
+  Function.setLSDAAddress(LSDA ? *LSDA : 0);
+}
+
 bool CFIReaderWriter::fillCFIInfoFor(BinaryFunction &Function) const {
   uint64_t Address = Function.getAddress();
   auto I = FDEs.find(Address);
@@ -514,8 +560,6 @@ bool CFIReaderWriter::fillCFIInfoFor(BinaryFunction &Function) const {
     return true;
 
   const FDE &CurFDE = *I->second;
-  Optional<uint64_t> LSDA = CurFDE.getLSDAAddress();
-  Function.setLSDAAddress(LSDA ? *LSDA : 0);
 
   uint64_t Offset = Function.getFirstInstructionOffset();
   uint64_t CodeAlignment = CurFDE.getLinkedCIE()->getCodeAlignmentFactor();

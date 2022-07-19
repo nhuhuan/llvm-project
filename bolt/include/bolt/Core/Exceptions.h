@@ -38,6 +38,7 @@ class CFIReaderWriter {
 public:
   explicit CFIReaderWriter(const DWARFDebugFrame &EHFrame);
 
+  void extractLSDAAddress(BinaryFunction &Function) const;
   bool fillCFIInfoFor(BinaryFunction &Function) const;
 
   /// Generate .eh_frame_hdr from old and new .eh_frame sections.

@@ -2277,7 +2277,11 @@ public:
   }
 
   /// Process LSDA information for the function.
-  void parseLSDA(ArrayRef<uint8_t> LSDAData, uint64_t LSDAAddress);
+  /// Run in two phases:
+  ///  (a) Validate landing pad targets --> CheckOnly
+  ///  (b) Skip validation, process LSDA only --> !CheckOnly
+  void parseLSDA(ArrayRef<uint8_t> LSDAData, uint64_t LSDAAddress,
+                 bool CheckOnly);
 
   /// Update exception handling ranges for the function.
   void updateEHRanges();
