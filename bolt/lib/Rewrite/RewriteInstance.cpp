@@ -1557,6 +1557,7 @@ Error RewriteInstance::readSpecialSections() {
                      TimerGroupName, TimerGroupDesc, opts::TimeRewrite);
 
   bool HasTextRelocations = false;
+  bool HasSymbolTable = false;
   bool HasDebugInfo = false;
 
   // Process special sections.
@@ -1588,6 +1589,7 @@ Error RewriteInstance::readSpecialSections() {
   }
 
   HasTextRelocations = (bool)BC->getUniqueSectionByName(".rela.text");
+  HasSymbolTable = (bool)BC->getUniqueSectionByName(".symtab");
   LSDASection = BC->getUniqueSectionByName(".gcc_except_table");
   EHFrameSection = BC->getUniqueSectionByName(".eh_frame");
   GOTPLTSection = BC->getUniqueSectionByName(".got.plt");
@@ -1624,6 +1626,8 @@ Error RewriteInstance::readSpecialSections() {
   BC->HasRelocations =
       HasTextRelocations && (opts::RelocationMode != cl::BOU_FALSE);
 
+  BC->IsStripped = !HasSymbolTable;
+
   // Force non-relocation mode for heatmap generation
   if (opts::HeatmapMode)
     BC->HasRelocations = false;
@@ -1631,6 +1635,9 @@ Error RewriteInstance::readSpecialSections() {
   if (BC->HasRelocations)
     outs() << "BOLT-INFO: enabling " << (opts::StrictMode ? "strict " : "")
            << "relocation mode\n";
+
+  if (BC->IsStripped)
+    outs() << "BOLT-INFO: target binary is stripped!\n";
 
   // Read EH frame for function boundaries info.
   Expected<const DWARFDebugFrame *> EHFrameOrError = BC->DwCtx->getEHFrame();
