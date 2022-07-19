@@ -1886,8 +1886,12 @@ void BinaryFunction::recomputeLandingPads() {
       if (!EHInfo || !EHInfo->first)
         continue;
 
-      BinaryBasicBlock *LPBlock = getBasicBlockForLabel(EHInfo->first);
-      if (!BBLandingPads.count(LPBlock)) {
+      // For cross-fragment LPs, LPBlock = nullptr if LPFunc not yet buildCFG
+      // Solution: after buildCFG for all functions, rerun recomputeLandingPads
+      const MCSymbol *LPLabel = EHInfo->first;
+      BinaryFunction *LPFunc = BC.getFunctionForSymbol(LPLabel);
+      BinaryBasicBlock *LPBlock = LPFunc->getBasicBlockForLabel(LPLabel);
+      if (LPBlock != nullptr && !BBLandingPads.count(LPBlock)) {
         BBLandingPads.insert(LPBlock);
         BB->LandingPads.emplace_back(LPBlock);
         LPBlock->Throwers.emplace_back(BB);

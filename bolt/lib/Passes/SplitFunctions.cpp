@@ -334,8 +334,11 @@ SplitFunctions::createEHTrampolines(BinaryFunction &BF) const {
       if (!EHInfo || !EHInfo->first)
         continue;
 
+      // In case of split landing pad, LPFunc != BF
       const MCSymbol *LPLabel = EHInfo->first;
-      BinaryBasicBlock *LPBlock = BF.getBasicBlockForLabel(LPLabel);
+      BinaryFunction *LPFunc =
+          BF.getBinaryContext().getFunctionForSymbol(LPLabel);
+      BinaryBasicBlock *LPBlock = LPFunc->getBasicBlockForLabel(LPLabel);
       if (BB->isCold() == LPBlock->isCold())
         continue;
 
@@ -347,13 +350,14 @@ SplitFunctions::createEHTrampolines(BinaryFunction &BF) const {
         // Create a trampoline basic block in the same fragment as the thrower.
         // Note: there's no need to insert the jump instruction, it will be
         // added by fixBranches().
-        BinaryBasicBlock *TrampolineBB = BF.addBasicBlock();
+        BinaryBasicBlock *TrampolineBB = LPFunc->addBasicBlock();
         TrampolineBB->setIsCold(BB->isCold());
         TrampolineBB->setExecutionCount(LPBlock->getExecutionCount());
         TrampolineBB->addSuccessor(LPBlock, TrampolineBB->getExecutionCount());
         TrampolineBB->setCFIState(LPBlock->getCFIState());
         TrampolineLabel = TrampolineBB->getLabel();
         LPTrampolines.insert(std::make_pair(LPLabel, TrampolineLabel));
+        BF.getBinaryContext().setSymbolToFunctionMap(TrampolineLabel, LPFunc);
       }
 
       // Substitute the landing pad with the trampoline.

@@ -2901,6 +2901,16 @@ void RewriteInstance::disassembleFunctions() {
   }
 
   BC->processInterproceduralReferences();
+  // Using LSDA to establish parent-fragment relation
+  for (auto &BFI : BC->getBinaryFunctions()) {
+    BinaryFunction &Function = BFI.second;
+    if (!Function.isSimple())
+      continue;
+    CFIRdWrt->extractLSDAAddress(Function);
+    if (Function.getLSDAAddress() != 0)
+      Function.parseLSDA(getLSDAData(), getLSDAAddress(), true);
+  }
+
   BC->populateJumpTables();
 
   for (auto &BFI : BC->getBinaryFunctions()) {
@@ -2922,9 +2932,10 @@ void RewriteInstance::disassembleFunctions() {
     if (!shouldDisassemble(Function))
       continue;
 
-    if (!Function.isSimple()) {
-      assert((!BC->HasRelocations || Function.getSize() == 0 ||
-              Function.hasIndirectTargetToSplitFragment()) &&
+    // If non-simple due to split jump table or split landing pad, process
+    // Every other non-simple cases, ignore
+    if (!Function.isSimple() && !Function.hasIndirectTargetToSplitFragment()) {
+      assert((!BC->HasRelocations || Function.getSize() == 0) &&
              "unexpected non-simple function in relocation mode");
       continue;
     }
@@ -2942,9 +2953,8 @@ void RewriteInstance::disassembleFunctions() {
     }
 
     // Parse LSDA.
-    if (Function.getLSDAAddress() != 0 &&
-        !BC->getFragmentsToSkip().count(&Function))
-      Function.parseLSDA(getLSDAData(), getLSDAAddress());
+    if (Function.getLSDAAddress() != 0)
+      Function.parseLSDA(getLSDAData(), getLSDAAddress(), false);
   }
 }
 
@@ -2978,6 +2988,14 @@ void RewriteInstance::buildFunctionsCFG() {
       /*ForceSequential*/ opts::SequentialDisassembly || opts::PrintAll);
 
   BC->postProcessSymbolTable();
+
+  // buildCFG already executes recomputeLandingPads
+  // However, with split landing pad, target function might not have CFG yet
+  // --> Safely ignore split landing pad during buildCFG
+  // --> Rerun recomputeLandingPads after all functions have CFG
+  for (BinaryFunction *Function : BC->getAllBinaryFunctions())
+    if (Function->getState() == BinaryFunction::State::CFG)
+      Function->recomputeLandingPads();
 }
 
 void RewriteInstance::postProcessFunctions() {

@@ -8,6 +8,8 @@
 # This test is written to ensure BOLT safely handle these targets, e.g., by
 # marking them as non-simple.
 #
+# This test is for both stripped and non-stripped binaries
+#
 # Steps to write this test:
 # - Create a copy of Inputs/src/unreachable.cpp
 # - Simplify bar(), focus on throw an exception
@@ -25,10 +27,17 @@
 # REQUIRES: system-linux
 # RUN: llvm-mc -filetype=obj -triple x86_64-unknown-unknown %s -o %t.o
 # RUN: %clang++ %cxxflags %t.o -o %t.exe -Wl,-q
-# RUN: llvm-bolt -v=3 %t.exe -o %t.out 2>&1 | FileCheck %s
+# RUN: llvm-bolt -v=3 %t.exe -o %t.out -print-exceptions -print-cfg 2>&1 | FileCheck %s
 
-# CHECK: BOLT-WARNING: Ignoring foo
-# CHECK: BOLT-WARNING: Ignoring foo.cold.1
+# RUN: cp %t.exe %t.tmp.exe
+# RUN: llvm-strip -s %t.tmp.exe
+# RUN: llvm-bolt -v=3 %t.tmp.exe -o %t.out -print-exceptions -print-cfg 2>&1 | FileCheck %s
+
+# CHECK: BOLT-INFO: marking [[FOO_COLD:.+]] as a fragment of [[FOO:.+]]
+# CHECK: landing pad label: [[TMP2:.+]]
+# CHECK: landing pad label: [[TMP5:.+]]
+# CHECK: BOLT-WARNING: Ignoring [[FOO]]
+# CHECK: BOLT-WARNING: Ignoring [[FOO_COLD]]
 # CHECK: BOLT-WARNING: skipped 2 functions due to cold fragments
 
 	.text
