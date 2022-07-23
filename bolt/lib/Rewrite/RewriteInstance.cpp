@@ -2913,14 +2913,21 @@ void RewriteInstance::disassembleFunctions() {
 
   BC->populateJumpTables();
 
+  // For split-function binaries, postProcessJumpTables generates
+  // some secondary entry points for the sibling fragments
+  // --> Need to be validated later by postProcessEntryPoints
   for (auto &BFI : BC->getBinaryFunctions()) {
     BinaryFunction &Function = BFI.second;
-
     if (!shouldDisassemble(Function))
       continue;
-
-    Function.postProcessEntryPoints();
     Function.postProcessJumpTables();
+  }
+
+  for (auto &BFI : BC->getBinaryFunctions()) {
+    BinaryFunction &Function = BFI.second;
+    if (!shouldDisassemble(Function))
+      continue;
+    Function.postProcessEntryPoints();
   }
 
   BC->clearJumpTableTempData();

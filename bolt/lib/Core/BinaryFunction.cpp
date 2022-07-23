@@ -1673,10 +1673,20 @@ void BinaryFunction::postProcessJumpTables() {
         }
         if (IsBuiltIn)
           continue;
-        // Create local label for targets cannot be reached by other fragments
-        // Otherwise, secondary entry point to target function
+
         BinaryFunction *TargetBF =
             BC.getBinaryFunctionContainingAddress(EntryAddress);
+
+        // Disassemble all functions before postProcessJumpTable
+        // !shouldDisassembled --> State != Disassembled
+        // If target function is ignored, also ignore current function
+        if (TargetBF->getState() != BinaryFunction::State::Disassembled) {
+           setIgnored();
+           return;
+        }
+
+        // Create local label for targets cannot be reached by other fragments
+        // Otherwise, secondary entry point to target function
         if (TargetBF->getAddress() != EntryAddress) {
           MCSymbol *Label =
               (HasOneParent && TargetBF == this)
