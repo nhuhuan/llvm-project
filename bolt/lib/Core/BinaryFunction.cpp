@@ -790,6 +790,17 @@ BinaryFunction::processIndirectBranch(MCInst &Instruction, unsigned Size,
     }
   }
 
+  // IMPORTANT: analyzeIndirectBranch does not analyze PIC jump table pattern
+  // that cross fragments
+  // --> failed to recognize BranchType
+  // --> miscount jump table parents
+  // Solution:
+  // 1. Lift all instructions in every instruction to MCInst
+  // 2. Build map <MCInst*,MCInst*>: (Branch -> Dest) from all direct branches
+  // 3. Identify indirect BranchType with respect to CFG
+  // 4. Create jump tables
+  // 5. Update map with new indirect branches, including jump tables
+  // 6. If some unclaimed PC-relative relocations in data, repeat from 3->5
   IndirectBranchType BranchType = BC.MIB->analyzeIndirectBranch(
       Instruction, Begin, Instructions.end(), PtrSize, MemLocInstr, BaseRegNum,
       IndexRegNum, DispValue, DispExpr, PCRelBaseInstr);
@@ -1670,6 +1681,11 @@ void BinaryFunction::postProcessJumpTables() {
                   ? getOrCreateLocalLabel(JT.EntriesAsAddress[I], true)
                   : TargetBF->addEntryPointAtOffset(EntryAddress -
                                                     TargetBF->getAddress());
+          JT.Entries.push_back(Label);
+        }
+        // If jump table entry is fragment entry, the label already exists
+        else {
+          MCSymbol *Label = TargetBF->getLabels().at(0);
           JT.Entries.push_back(Label);
         }
       }
