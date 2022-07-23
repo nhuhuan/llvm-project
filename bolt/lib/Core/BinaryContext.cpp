@@ -664,6 +664,7 @@ bool BinaryContext::analyzeJumpTable(
 }
 
 void BinaryContext::populateJumpTables() {
+  SmallVector<JumpTable*,1> JTableRemoveList;
   LLVM_DEBUG(dbgs() << "DataPCRelocations: " << DataPCRelocations.size()
                     << '\n');
   for (auto JTI = JumpTables.begin(), JTE = JumpTables.end(); JTI != JTE;
@@ -703,7 +704,9 @@ void BinaryContext::populateJumpTables() {
                    dbgs() << "\n";);
         NextJTI->second->print(dbgs());
       }
-      llvm_unreachable("jump table heuristic failure");
+
+      JTableRemoveList.push_back(JT);
+      continue;
     }
     for (BinaryFunction *Frag : JT->Parents) {
       for (uint64_t EntryAddress : JT->EntriesAsAddress)
@@ -765,6 +768,14 @@ void BinaryContext::populateJumpTables() {
           BF->setIgnored();
       }
     }
+
+  // Ignore invalid jump tables
+  for (JumpTable *JT : JTableRemoveList) {
+    for (BinaryFunction *Frag : JT->Parents) {
+      Frag->setIgnored();
+      Frag->JumpTables.erase(Frag->JumpTables.find(JT->getAddress()));
+    }
+    JumpTables.erase(JumpTables.find(JT->getAddress()));
   }
 
   if (opts::StrictMode && DataPCRelocations.size()) {
