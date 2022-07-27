@@ -708,6 +708,7 @@ void BinaryContext::populateJumpTables() {
       JTableRemoveList.push_back(JT);
       continue;
     }
+
     for (BinaryFunction *Frag : JT->Parents) {
       for (uint64_t EntryAddress : JT->EntriesAsAddress)
         // if target is builtin_unreachable
@@ -736,10 +737,21 @@ void BinaryContext::populateJumpTables() {
         addFragmentsToSkip(Frag);
   }
 
+  // Ignore invalid jump tables
+  for (JumpTable *JT : JTableRemoveList) {
+    for (BinaryFunction *Frag : JT->Parents) {
+      Frag->setIgnored();
+      Frag->JumpTables.erase(Frag->JumpTables.find(JT->getAddress()));
+    }
+    JumpTables.erase(JumpTables.find(JT->getAddress()));
+  }
+
   // Scan unclaimed PC-relative relocations due to failed jump table analysis
+  if (!JumpTables.empty())
   for (uint64_t Reloc : DataPCRelocations) {
-    JumpTable JT = nullptr;
+    JumpTable *JT = nullptr;
     // Check if Reloc is not a part of any jump table
+
     if (Reloc < JumpTables.begin()->first)
       continue;
     // Check if Reloc is potentially part of the last jump table (largest addr)
@@ -755,8 +767,8 @@ void BinaryContext::populateJumpTables() {
         JT = Iter->second;
     }
 
-    if (JT->Type == JumpTable::JumpTableType::POSSIBLE_PIC_JUMP_TABLE) {
-      const uint64_t EntrySize = getJumpTableEntrySize(Type);
+    if (JT != nullptr && JT->Type == JumpTable::JTT_PIC) {
+      const uint64_t EntrySize = getJumpTableEntrySize(JT->Type);
       uint64_t Address =
           JT->getAddress() + *getSignedValueAtAddress(Reloc, EntrySize);
       BinaryFunction *TargetBF = getBinaryFunctionContainingAddress(Address);
@@ -768,14 +780,6 @@ void BinaryContext::populateJumpTables() {
           BF->setIgnored();
       }
     }
-
-  // Ignore invalid jump tables
-  for (JumpTable *JT : JTableRemoveList) {
-    for (BinaryFunction *Frag : JT->Parents) {
-      Frag->setIgnored();
-      Frag->JumpTables.erase(Frag->JumpTables.find(JT->getAddress()));
-    }
-    JumpTables.erase(JumpTables.find(JT->getAddress()));
   }
 
   if (opts::StrictMode && DataPCRelocations.size()) {
