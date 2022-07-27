@@ -733,6 +733,40 @@ void BinaryContext::populateJumpTables() {
         addFragmentsToSkip(Frag);
   }
 
+  // Scan unclaimed PC-relative relocations due to failed jump table analysis
+  for (uint64_t Reloc : DataPCRelocations) {
+    JumpTable JT = nullptr;
+    // Check if Reloc is not a part of any jump table
+    if (Reloc < JumpTables.begin()->first)
+      continue;
+    // Check if Reloc is potentially part of the last jump table (largest addr)
+    if (JumpTables.rbegin()->first <= Reloc) {
+      if (JumpTables.rbegin()->first + 50 > Reloc)
+        JT = JumpTables.rbegin()->second;
+    }
+    // Find the potential jump table containing Reloc
+    else {
+      auto Iter = JumpTables.upper_bound(Reloc);
+      --Iter;
+      if (Iter->first + 50 > Reloc)
+        JT = Iter->second;
+    }
+
+    if (JT->Type == JumpTable::JumpTableType::POSSIBLE_PIC_JUMP_TABLE) {
+      const uint64_t EntrySize = getJumpTableEntrySize(Type);
+      uint64_t Address =
+          JT->getAddress() + *getSignedValueAtAddress(Reloc, EntrySize);
+      BinaryFunction *TargetBF = getBinaryFunctionContainingAddress(Address);
+      // Ignore the function containing this potential jump table target
+      if (TargetBF != nullptr) {
+        TargetBF->setIgnored();
+        // Ignore all functions access this potential jump table target
+        for (BinaryFunction *BF : JT->Parents)
+          BF->setIgnored();
+      }
+    }
+  }
+
   if (opts::StrictMode && DataPCRelocations.size()) {
     LLVM_DEBUG({
       dbgs() << DataPCRelocations.size()
@@ -742,6 +776,7 @@ void BinaryContext::populateJumpTables() {
     });
     assert(0 && "unclaimed PC-relative relocations left in data\n");
   }
+
   clearList(DataPCRelocations);
 }
 
