@@ -1667,12 +1667,23 @@ void BinaryFunction::postProcessJumpTables() {
             break;
           }
         }
+
         if (IsBuiltIn)
           continue;
-        // Create local label for targets cannot be reached by other fragments
-        // Otherwise, secondary entry point to target function
+
+        // Functions can be optionally skipped by users, or marked as ignored
+        // during branch target analysis. Since the target function is not
+        // processed, functions that access jump tables which point to these
+        // target functions also need to be marked as ignored
         BinaryFunction *TargetBF =
             BC.getBinaryFunctionContainingAddress(EntryAddress);
+        if (TargetBF->getState() != BinaryFunction::State::Disassembled ||
+            TargetBF->isIgnored()) {
+          setIgnored();
+          return;
+        }
+        // Create local label for targets cannot be reached by other fragments
+        // Otherwise, register as a secondary entry point to target function
         if (TargetBF->getAddress() != EntryAddress) {
           MCSymbol *Label =
               (HasOneParent && TargetBF == this)
