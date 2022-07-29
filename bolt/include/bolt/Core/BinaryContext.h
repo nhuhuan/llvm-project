@@ -480,6 +480,16 @@ public:
                                        uint64_t Address,
                                        JumpTable::JumpTableType Type);
 
+  /// Validate a possible jump table entry at \p Address for \p Function
+  /// Return true if it is a valid jump table entry
+  ///
+  /// Function is a function referencing the jump table
+  /// Address is the address of the jump table target
+  /// ValidExternalTargetBF is the first external function which jump table
+  /// points to. This is used in a heuristic for stripped binaries
+  bool isValidJumpTableEntry(uint64_t Address, BinaryFunction &Function,
+                             BinaryFunction *&ValidExternalTargetBF);
+
   /// Analyze a possible jump table of type \p Type at a given \p Address.
   /// \p BF is a function referencing the jump table.
   /// Return true if the jump table was detected at \p Address, and false

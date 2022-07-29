@@ -419,8 +419,16 @@ BinaryContext::handleAddressRef(uint64_t Address, BinaryFunction &BF,
     }
   }
 
-  // With relocations, catch jump table references outside of the basic block
-  // containing the indirect jump.
+  // IMPORTANT:
+  // Creating jump table without checking BranchType == POSSIBLE_PIC_JUMP_TABLE
+  // can lead to false positives, especially when processing stripped binaries.
+  // But it's less likely to affect nonstripped binaries due to strong check
+  //
+  // In addition, processIndirectBranch() check both MemType and BranchType,
+  // but the current version fails to analyze cross-function jump table pattern,
+  // potentially leading to false negatives.
+  //
+  // Keep this code for now to avoid false negatives.
   if (HasRelocations) {
     const MemoryContentsType MemType = analyzeMemoryAt(Address, BF);
     if (MemType == MemoryContentsType::POSSIBLE_PIC_JUMP_TABLE && IsPCRel) {
@@ -490,6 +498,90 @@ bool isPotentialFragmentByName(BinaryFunction &Fragment,
   return false;
 }
 
+bool BinaryContext::isValidJumpTableEntry(
+    uint64_t Address, BinaryFunction &Function,
+    BinaryFunction *&ValidExternalTargetBF) {
+
+  BinaryFunction *TargetBF = getBinaryFunctionContainingAddress(Address);
+
+  // Property 1: Entry must target a valid function body
+  if (!TargetBF) {
+    LLVM_DEBUG(dbgs() << "Invalid jump table entry candidate: not point to any "
+                      << "function\n";);
+    return false;
+  }
+
+  // Property 2: Entry cannot target invalid instruction bounds
+  // Disassembly is not decoupled from branch analysis, so this property could
+  // be bypassed for some jump tables during disassembly, leading to some false
+  // positives. However, populateJumpTables will reevaluate all jump tables
+  // with this property again
+  if (TargetBF->getState() == BinaryFunction::State::Disassembled &&
+      !TargetBF->getInstructionAtOffset(Address - TargetBF->getAddress())) {
+    LLVM_DEBUG(dbgs() << "Invalid jump table entry candidate: fail instruction "
+                      << "boundary check\n");
+    return false;
+  }
+
+  // Property 3: Entry cannot target more than 1 other-fragment
+  if (IsStripped && TargetBF != &Function) {
+    // First time, the different fragment target can be any fragment
+    if (ValidExternalTargetBF == nullptr) {
+      ValidExternalTargetBF = TargetBF;
+      TargetBF->IsFragment = true;
+      return registerFragment(*TargetBF, Function);
+    }
+    // Second time, the different fragment target must be similar
+    LLVM_DEBUG(if (TargetBF != ValidExternalTargetBF) dbgs()
+                   << "Invalid jump table entry candidate: point to more than "
+                   << "one sibling fragment\n";);
+    return TargetBF == ValidExternalTargetBF;
+  }
+
+  // Property 4: Address cannot point to a callable function entry
+  // This property is not implemented yet!
+  // Compute a subset of definite callable function entry, and prohibit entries
+  // pointing to such function. Identify callable function using properties
+  // (a) Containing prologue
+  // (b) Reached by a direct call
+  // (c) Referenced in GOT and/or VTable
+  // (d) Passed ABI checks, e.g., callee-saved preservation
+
+  // Property 5: Non-overlapping jump tables
+  // This property was already enforced in calculating UpperBound
+  // Relax policy for stripped binaries by accept all entries at this point
+  if (IsStripped) {
+    if (TargetBF != &Function) {
+      TargetBF->IsFragment = true;
+      return registerFragment(*TargetBF, Function);
+    }
+    return true;
+  }
+
+  // Property 6: Perform further check for non-stripped binaries
+  // (a) TargetBF and Function
+  if (TargetBF == &Function)
+    return true;
+  // (b) TargetBF is parent fragment
+  if (Function.isFragment()) {
+    bool IsValid = registerFragment(Function, *TargetBF);
+    LLVM_DEBUG(if (!IsValid) dbgs()
+                   << "Invalid jump table entry candidate: point to a different"
+                   << " function\n";);
+    return IsValid;
+  }
+  // (c) BF is parent fragment
+  else if (TargetBF->isFragment()) {
+    bool IsValid = registerFragment(*TargetBF, Function);
+    LLVM_DEBUG(if (!IsValid) dbgs()
+                   << "Invalid jump table entry candidate: point to a different"
+                   << " function\n";);
+    return IsValid;
+  }
+
+  return false;
+}
+
 bool BinaryContext::analyzeJumpTable(
     const uint64_t Address, const JumpTable::JumpTableType Type,
     BinaryFunction &BF, const uint64_t NextJTAddress,
@@ -499,27 +591,11 @@ bool BinaryContext::analyzeJumpTable(
 
   // Number of targets other than __builtin_unreachable.
   uint64_t NumRealEntries = 0;
+  BinaryFunction *ValidExternalTargetBF = nullptr;
 
   auto addEntryAddress = [&](uint64_t EntryAddress) {
     if (EntriesAsAddress)
       EntriesAsAddress->emplace_back(EntryAddress);
-  };
-
-  auto doesBelongToFunction = [&](const uint64_t Addr,
-                                  BinaryFunction *TargetBF) -> bool {
-    if (BF.containsAddress(Addr))
-      return true;
-    // Nothing to do if we failed to identify the containing function.
-    if (!TargetBF)
-      return false;
-    // Case 1: check if BF is a fragment and TargetBF is its parent.
-    if (BF.isFragment()) {
-      // Parent function may or may not be already registered.
-      // Set parent link based on function name matching heuristic.
-      return registerFragment(BF, *TargetBF);
-    }
-    // Case 2: check if TargetBF is a fragment and BF is its parent.
-    return TargetBF->isFragment() && registerFragment(*TargetBF, BF);
   };
 
   ErrorOr<BinarySection &> Section = getSectionForAddress(Address);
@@ -574,41 +650,15 @@ bool BinaryContext::analyzeJumpTable(
       continue;
     }
 
-    // Function or one of its fragments.
     BinaryFunction *TargetBF = getBinaryFunctionContainingAddress(Value);
 
-    // We assume that a jump table cannot have function start as an entry.
-    if (!doesBelongToFunction(Value, TargetBF) || Value == BF.getAddress()) {
-      LLVM_DEBUG({
-        if (!BF.containsAddress(Value)) {
-          dbgs() << "FAIL: function doesn't contain this address\n";
-          if (TargetBF) {
-            dbgs() << "  ! function containing this address: "
-                   << TargetBF->getPrintName() << '\n';
-            if (TargetBF->isFragment())
-              dbgs() << "  ! is a fragment\n";
-            for (BinaryFunction *TargetParent : TargetBF->ParentFragments)
-              dbgs() << "  ! its parent is "
-                     << (TargetParent ? TargetParent->getPrintName() : "(none)")
-                     << '\n';
-          }
-        }
-        if (Value == BF.getAddress())
-          dbgs() << "FAIL: jump table cannot have function start as an entry\n";
-      });
+    // Verify if Value is a valid jump table entry
+    if (!isValidJumpTableEntry(Value, BF, ValidExternalTargetBF))
       break;
-    }
-
-    // Check there's an instruction at this offset.
-    if (TargetBF->getState() == BinaryFunction::State::Disassembled &&
-        !TargetBF->getInstructionAtOffset(Value - TargetBF->getAddress())) {
-      LLVM_DEBUG(dbgs() << "FAIL: no instruction at this offset\n");
-      break;
-    }
 
     ++NumRealEntries;
 
-    if (TargetBF != &BF)
+    if (TargetBF != nullptr && TargetBF != &BF)
       BF.setHasIndirectTargetToSplitFragment(true);
     addEntryAddress(Value);
   }
