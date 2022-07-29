@@ -1602,10 +1602,10 @@ void BinaryFunction::postProcessEntryPoints() {
     if (!getSecondaryEntryPointSymbol(Label))
       continue;
 
-    // In non-relocation mode there's potentially an external undetectable
-    // reference to the entry point and hence we cannot move this entry
-    // point. Optimizing without moving could be difficult.
-    if (!BC.HasRelocations)
+    // Stripped binaries mostly don't have .rela.text section
+    // Without .rela.text, BOLT cannot reliably move code
+    // Relaxing for stripped binaries only, not affect nonstripped binaries
+    if (!BC.IsStripped && !BC.HasRelocations)
       setSimple(false);
 
     const uint32_t Offset = KV.first;

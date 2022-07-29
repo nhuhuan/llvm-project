@@ -1119,14 +1119,19 @@ void BinaryContext::generateSymbolHashes() {
 
 bool BinaryContext::registerFragment(BinaryFunction &TargetFunction,
                                      BinaryFunction &Function) const {
-  if (!isPotentialFragmentByName(TargetFunction, Function))
+  // Only use symbol name matching for non-stripped binaries
+  if (!IsStripped && !isPotentialFragmentByName(TargetFunction, Function))
     return false;
   assert(TargetFunction.isFragment() && "TargetFunction must be a fragment");
   if (TargetFunction.isParentFragment(&Function))
     return true;
   TargetFunction.addParentFragment(Function);
   Function.addFragment(TargetFunction);
-  if (!HasRelocations) {
+
+  // Stripped binaries mostly don't have .rela.text section
+  // Without .rela.text, BOLT cannot reliably move code
+  // Relaxing for stripped binaries only, not affect nonstripped binaries
+  if (!IsStripped && !HasRelocations) {
     TargetFunction.setSimple(false);
     Function.setSimple(false);
   }
