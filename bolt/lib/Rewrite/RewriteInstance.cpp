@@ -2898,11 +2898,8 @@ void RewriteInstance::disassembleFunctions() {
 
   for (auto &BFI : BC->getBinaryFunctions()) {
     BinaryFunction &Function = BFI.second;
-
     if (!shouldDisassemble(Function))
       continue;
-
-    Function.postProcessEntryPoints();
     Function.postProcessJumpTables();
   }
 
@@ -2938,6 +2935,15 @@ void RewriteInstance::disassembleFunctions() {
     if (Function.getLSDAAddress() != 0 &&
         !BC->getFragmentsToSkip().count(&Function))
       Function.parseLSDA(getLSDAData(), getLSDAAddress());
+  }
+
+  // Split jump table, split landing pad register secondary entry points
+  // postProcessEntryPoints needs to be invoked in the end
+  for (auto &BFI : BC->getBinaryFunctions()) {
+    BinaryFunction &Function = BFI.second;
+    if (!shouldDisassemble(Function))
+      continue;
+    Function.postProcessEntryPoints();
   }
 }
 
