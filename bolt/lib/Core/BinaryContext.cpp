@@ -723,6 +723,7 @@ void BinaryContext::populateJumpTables() {
       AbortedJTs.push_back(JT);
       continue;
     }
+
     for (BinaryFunction *Frag : JT->Parents) {
       for (uint64_t EntryAddress : JT->EntriesAsAddress)
         // if target is builtin_unreachable
@@ -735,9 +736,10 @@ void BinaryContext::populateJumpTables() {
         }
     }
 
-    // In strict mode, erase PC-relative relocation record. Later we check that
-    // all such records are erased and thus have been accounted for.
-    if (opts::StrictMode && JT->Type == JumpTable::JTT_PIC) {
+    // For nonstripped binaries, erase identified PC-relative relocations
+    // Later, account for unclaimed relocations possibly related to jump table
+    // In strict mode, check if all such relocations have been accounted for
+    if (!DataPCRelocations.empty() && JT->Type == JumpTable::JTT_PIC) {
       for (uint64_t Address = JT->getAddress();
            Address < JT->getAddress() + JT->getSize();
            Address += JT->EntrySize) {
@@ -758,6 +760,63 @@ void BinaryContext::populateJumpTables() {
       Frag->JumpTables.erase(Frag->JumpTables.find(JT->getAddress()));
     }
     JumpTables.erase(JumpTables.find(JT->getAddress()));
+  }
+
+  // Scan for unclaimed PC-relative relocations related to jump table only
+  // 1. Find the PIC jump table preceding the relocation address
+  // 2. Compute jump table target with respect to jump table base
+  // 3. Perform instruction boundary checks to prune invalid targets
+  // 4. Ignore the function contains the jump table target instruction
+  // 5. Ignore all functions that access to the jump table
+  if (!JumpTables.empty()) {
+    for (uint64_t Reloc : DataPCRelocations) {
+      JumpTable *JT = nullptr;
+      // Reloc does not belong to any jump table
+      if (Reloc < JumpTables.begin()->first)
+        continue;
+      // Reloc is an entry in the last jump table
+      if (JumpTables.rbegin()->first <= Reloc) {
+        if (JumpTables.rbegin()->first + 50 > Reloc)
+          JT = JumpTables.rbegin()->second;
+      }
+      // Reloc is an entry in the jump table preceding Reloc
+      else {
+        auto Iter = JumpTables.upper_bound(Reloc);
+        --Iter;
+        if (Iter->first + 50 > Reloc)
+          JT = Iter->second;
+      }
+
+      if (JT != nullptr && JT->Type == JumpTable::JTT_PIC) {
+        // Compute jump table target
+        const uint64_t EntrySize = getJumpTableEntrySize(JT->Type);
+        uint64_t Address =
+            JT->getAddress() + *getSignedValueAtAddress(Reloc, EntrySize);
+        BinaryFunction *TargetBF = getBinaryFunctionContainingAddress(Address);
+        // Perform instruction boundary check
+        if (TargetBF != nullptr) {
+          // If the potential entry points to a valid function
+          if (TargetBF->getState() == BinaryFunction::State::Disassembled) {
+            if (TargetBF->getInstructionAtOffset(Address -
+                                                 TargetBF->getAddress())) {
+              // Ignore the function containing jump table target
+              TargetBF->setIgnored();
+              // Ignore all functions accessing the jump table
+              for (BinaryFunction *BF : JT->Parents)
+                BF->setIgnored();
+            }
+          }
+          // If the potential entry points to a skipped function
+          else {
+            // Ignore the function containing jump table target
+            TargetBF->setIgnored();
+            // Ignore all functions accessing the jump table
+            for (BinaryFunction *BF : JT->Parents)
+              BF->setIgnored();
+          }
+        }
+      }
+    }
   }
 
   if (opts::StrictMode && DataPCRelocations.size()) {
