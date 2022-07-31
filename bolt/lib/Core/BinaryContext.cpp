@@ -723,7 +723,7 @@ void BinaryContext::populateJumpTables() {
 
     // In strict mode, erase PC-relative relocation record. Later we check that
     // all such records are erased and thus have been accounted for.
-    if (opts::StrictMode && JT->Type == JumpTable::JTT_PIC) {
+    if (!DataPCRelocations.empty() && JT->Type == JumpTable::JTT_PIC) {
       for (uint64_t Address = JT->getAddress();
            Address < JT->getAddress() + JT->getSize();
            Address += JT->EntrySize) {
