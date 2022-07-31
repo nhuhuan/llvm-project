@@ -745,7 +745,8 @@ void BinaryContext::populateJumpTables() {
     }
     JumpTables.erase(JumpTables.find(JT->getAddress()));
   }
-
+for (auto [offset,JT]: JumpTables)
+outs() << "huan: found jump table at " << JT->getAddress() << "\n";
   // Scan unclaimed PC-relative relocations due to failed jump table analysis
   if (!JumpTables.empty())
   for (uint64_t Reloc : DataPCRelocations) {
@@ -756,14 +757,14 @@ void BinaryContext::populateJumpTables() {
       continue;
     // Check if Reloc is potentially part of the last jump table (largest addr)
     if (JumpTables.rbegin()->first <= Reloc) {
-      if (JumpTables.rbegin()->first + 50 > Reloc)
+      if (JumpTables.rbegin()->second->EntriesAsAddress.back() + 200 > Reloc)
         JT = JumpTables.rbegin()->second;
     }
     // Find the potential jump table containing Reloc
     else {
       auto Iter = JumpTables.upper_bound(Reloc);
       --Iter;
-      if (Iter->first + 50 > Reloc)
+      if (Iter->second->EntriesAsAddress.back() + 200 > Reloc)
         JT = Iter->second;
     }
 
@@ -774,6 +775,7 @@ void BinaryContext::populateJumpTables() {
       BinaryFunction *TargetBF = getBinaryFunctionContainingAddress(Address);
       // Ignore the function containing this potential jump table target
       if (TargetBF != nullptr) {
+        DataPCRelocations.erase(DataPCRelocations.find(Reloc));
         TargetBF->setIgnored();
         // Ignore all functions access this potential jump table target
         for (BinaryFunction *BF : JT->Parents)
@@ -781,7 +783,8 @@ void BinaryContext::populateJumpTables() {
       }
     }
   }
-
+for (auto x: DataPCRelocations)
+outs() << "huan: found unclaimed PC data relocation at " << x << "\n";
   if (opts::StrictMode && DataPCRelocations.size()) {
     LLVM_DEBUG({
       dbgs() << DataPCRelocations.size()
