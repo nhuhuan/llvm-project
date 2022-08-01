@@ -503,6 +503,20 @@ bool BinaryContext::isValidJumpTableEntry(
     BinaryFunction *&ValidExternalTargetBF) {
 
   BinaryFunction *TargetBF = getBinaryFunctionContainingAddress(Address);
+  BinaryFunction *PredBF = getBinaryFunctionContainingAddress(Address - 1);
+
+  // Property 0: Entry target builtin_unreachable of sibling fragments
+  if (!IsStripped && PredBF != nullptr && PredBF != TargetBF) {
+    // Assumption: sibling fragments cannot be placed next to each other
+    // Builtin unreachable of same function
+    if (PredBF == &Function)
+      return true;
+    // Builtin unreachable of sibling fragments
+    else if (Function.isFragment() && registerFragment(Function, *PredBF))
+      return true;
+    else if (PredBF->isFragment() && registerFragment(*PredBF, Function))
+      return true;
+  }
 
   // Property 1: Entry must target a valid function body
   if (!TargetBF) {
@@ -586,11 +600,8 @@ bool BinaryContext::analyzeJumpTable(
     const uint64_t Address, const JumpTable::JumpTableType Type,
     BinaryFunction &BF, const uint64_t NextJTAddress,
     JumpTable::AddressesType *EntriesAsAddress) {
-  // Is one of the targets __builtin_unreachable?
-  bool HasUnreachable = false;
 
-  // Number of targets other than __builtin_unreachable.
-  uint64_t NumRealEntries = 0;
+  uint64_t NumEntries = 0;
   BinaryFunction *ValidExternalTargetBF = nullptr;
 
   auto addEntryAddress = [&](uint64_t EntryAddress) {
@@ -642,21 +653,13 @@ bool BinaryContext::analyzeJumpTable(
             ? Address + *getSignedValueAtAddress(EntryAddress, EntrySize)
             : *getPointerAtAddress(EntryAddress);
 
-    // __builtin_unreachable() case.
-    if (Value == BF.getAddress() + BF.getSize()) {
-      addEntryAddress(Value);
-      HasUnreachable = true;
-      LLVM_DEBUG(dbgs() << "OK: __builtin_unreachable\n");
-      continue;
-    }
-
     BinaryFunction *TargetBF = getBinaryFunctionContainingAddress(Value);
 
     // Verify if Value is a valid jump table entry
     if (!isValidJumpTableEntry(Value, BF, ValidExternalTargetBF))
       break;
 
-    ++NumRealEntries;
+    ++NumEntries;
 
     if (TargetBF != nullptr && TargetBF != &BF)
       BF.setHasIndirectTargetToSplitFragment(true);
@@ -666,7 +669,7 @@ bool BinaryContext::analyzeJumpTable(
   // It's a jump table if the number of real entries is more than 1, or there's
   // one real entry and "unreachable" targets. If there are only multiple
   // "unreachable" targets, then it's not a jump table.
-  return NumRealEntries + HasUnreachable >= 2;
+  return NumEntries >= 2;
 }
 
 void BinaryContext::populateJumpTables() {
@@ -723,17 +726,26 @@ void BinaryContext::populateJumpTables() {
       AbortedJTs.push_back(JT);
       continue;
     }
+outs() << "huan: JTable (MemType) " << JT->getAddress() << "\n";
 
-    for (BinaryFunction *Frag : JT->Parents) {
-      for (uint64_t EntryAddress : JT->EntriesAsAddress)
-        // if target is builtin_unreachable
-        if (EntryAddress == Frag->getAddress() + Frag->getSize()) {
-          Frag->IgnoredBranches.emplace_back(EntryAddress - Frag->getAddress(),
-                                             Frag->getSize());
-        } else if (EntryAddress >= Frag->getAddress() &&
-                   EntryAddress < Frag->getAddress() + Frag->getSize()) {
-          Frag->registerReferencedOffset(EntryAddress - Frag->getAddress());
-        }
+    for (BinaryFunction *Parent : JT->Parents) {
+      SmallVector<BinaryFunction *,2> Siblings;
+      Siblings.push_back(Parent);
+      for (BinaryFunction *Frag : Parent->ParentFragments)
+        Siblings.push_back(Frag);
+      for (BinaryFunction *Frag : Parent->Fragments)
+        Siblings.push_back(Frag);
+
+      for (BinaryFunction *Frag : Siblings)
+        for (uint64_t EntryAddress : JT->EntriesAsAddress)
+          // if target is builtin_unreachable
+          if (EntryAddress == Frag->getAddress() + Frag->getSize()) {
+            Frag->IgnoredBranches.emplace_back(
+                EntryAddress - Frag->getAddress(), Frag->getSize());
+          } else if (EntryAddress >= Frag->getAddress() &&
+                     EntryAddress < Frag->getAddress() + Frag->getSize()) {
+            Frag->registerReferencedOffset(EntryAddress - Frag->getAddress());
+          }
     }
 
     // For nonstripped binaries, erase identified PC-relative relocations

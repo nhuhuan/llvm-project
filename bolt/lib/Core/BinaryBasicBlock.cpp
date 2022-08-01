@@ -101,8 +101,17 @@ bool BinaryBasicBlock::validateSuccessorInvariants() {
     // must be one of the function end labels.
     if (Valid) {
       for (const MCSymbol *Sym : UniqueSyms) {
-        Valid &= (Sym == Function->getFunctionEndLabel() ||
-                  Sym == Function->getFunctionColdEndLabel());
+        std::unordered_set<BinaryFunction *> Siblings;
+        Siblings.insert(Function->ParentFragments.begin(),
+                        Function->ParentFragments.end());
+        Siblings.insert(Function->Fragments.begin(), Function->Fragments.end());
+        Siblings.insert(Function);
+
+        Valid = false;
+        for (BinaryFunction *BF : Siblings)
+          Valid |= (Sym == BF->getFunctionEndLabel() ||
+              Sym == BF->getFunctionColdEndLabel());
+
         if (!Valid) {
           errs() << "BOLT-WARNING: Jump table contains illegal entry: "
                  << Sym->getName() << "\n";

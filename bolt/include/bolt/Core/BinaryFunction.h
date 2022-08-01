@@ -358,15 +358,9 @@ private:
   /// Name for the corresponding cold code section.
   std::string ColdCodeSectionName;
 
-  /// Parent function fragment for split function fragments.
-  SmallPtrSet<BinaryFunction *, 1> ParentFragments;
-
   /// Indicate if the function body was folded into another function.
   /// Used by ICF optimization.
   BinaryFunction *FoldedIntoFunction{nullptr};
-
-  /// All fragments for a parent function.
-  SmallPtrSet<BinaryFunction *, 1> Fragments;
 
   /// The profile data for the number of times the function was executed.
   uint64_t ExecutionCount{COUNT_NO_PROFILE};
@@ -843,6 +837,12 @@ public:
   inline iterator_range<const_cfi_iterator> cie() const {
     return iterator_range<const_cfi_iterator>(cie_begin(), cie_end());
   }
+
+  /// Parent function fragment for split function fragments.
+  SmallPtrSet<BinaryFunction *, 1> ParentFragments;
+
+  /// All fragments for a parent function.
+  SmallPtrSet<BinaryFunction *, 1> Fragments;
 
   /// Iterate over all jump tables associated with this function.
   iterator_range<std::map<uint64_t, JumpTable *>::const_iterator>

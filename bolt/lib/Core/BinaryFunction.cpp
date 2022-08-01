@@ -938,6 +938,7 @@ BinaryFunction::processIndirectBranch(MCInst &Instruction, unsigned Size,
   const MCSymbol *JTLabel = BC.getOrCreateJumpTable(*this, ArrayStart, JTType);
   BC.MIB->replaceMemOperandDisp(*MemLocInstr, JTLabel, BC.Ctx.get());
   BC.MIB->setJumpTable(Instruction, ArrayStart, IndexRegNum);
+outs() << "huan: JTable (BranchType): " << ArrayStart << "\n";
 
   JTSites.emplace_back(Offset, ArrayStart);
 
@@ -1655,35 +1656,43 @@ void BinaryFunction::postProcessJumpTables() {
       bool HasOneParent = (JT.Parents.size() == 1);
       for (unsigned I = 0; I < JT.EntriesAsAddress.size(); ++I) {
         uint64_t EntryAddress = JT.EntriesAsAddress[I];
-        // builtin_unreachable does not belong to any function
-        // Need to handle separately
-        bool IsBuiltIn = false;
-        for (BinaryFunction *Parent : JT.Parents) {
-          if (EntryAddress == Parent->getAddress() + Parent->getSize()) {
-            IsBuiltIn = true;
-            // Specify second parameter as true to accept builtin_unreachable
-            MCSymbol *Label = getOrCreateLocalLabel(EntryAddress, true);
+        BinaryFunction *TargetBF =
+            BC.getBinaryFunctionContainingAddress(EntryAddress);
+        BinaryFunction *PredBF =
+            BC.getBinaryFunctionContainingAddress(EntryAddress - 1);
+
+        // Handle builtin_unreachable at gaps between function
+        // For builtin_unreachable at next function entry, point jump table
+        // entry to the next function's entry
+        if (!BC.IsStripped && PredBF != nullptr && TargetBF == nullptr) {
+          bool FoundUnreachable = false;
+          for (BinaryFunction *Parent : JT.Parents)
+            if (PredBF == Parent || Parent->isParentFragment(PredBF) ||
+                PredBF->isParentFragment(Parent)) {
+              FoundUnreachable = true;
+              break;
+            }
+          if (FoundUnreachable) {
+            MCSymbol *Label = PredBF->getOrCreateLocalLabel(EntryAddress, true);
             JT.Entries.push_back(Label);
-            break;
+            continue;
           }
         }
 
-        if (IsBuiltIn)
-          continue;
+        assert(TargetBF && "jump table entry must belong to a function");
 
         // Functions can be optionally skipped by users, or marked as ignored
         // during branch target analysis. Since the target function is not
         // processed, functions that access jump tables which point to these
         // target functions also need to be marked as ignored
-        BinaryFunction *TargetBF =
-            BC.getBinaryFunctionContainingAddress(EntryAddress);
         if (TargetBF->getState() != BinaryFunction::State::Disassembled ||
             TargetBF->isIgnored()) {
           setIgnored();
           return;
         }
+
         // Create local label for targets cannot be reached by other fragments
-        // Otherwise, register as a secondary entry point to target function
+        // Otherwise, secondary entry point to target function
         if (TargetBF->getAddress() != EntryAddress) {
           MCSymbol *Label =
               (HasOneParent && TargetBF == this)
